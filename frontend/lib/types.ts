@@ -19,6 +19,10 @@ export interface ActiveSiteResidue {
   resname: string;
   chain: string;
   resi: number;
+  /** Exact Cα coordinates (PDB frame) — attached server-side. */
+  x?: number | null;
+  y?: number | null;
+  z?: number | null;
 }
 
 export interface ActiveSite {
@@ -45,7 +49,7 @@ export interface StructureModel {
   residue_count: number;
   full_residue_count?: number;
   points: StructurePoint[];
-  writhe: number;
+  writhe: number | null;
   local_writhe: number[];
   active_sites: ActiveSite[];
   metals: Metal[];

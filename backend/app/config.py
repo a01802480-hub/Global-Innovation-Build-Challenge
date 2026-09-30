@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     ortholog_species: str = "balaenoptera_musculus,balaenoptera_acutorostrata,physeter_catodon"
     rate_limit_per_minute: int = 120
     request_timeout_s: float = 25.0
-    variant_timeout_s: float = 60.0
+    # The legacy Ensembl REST hosts currently answer healthy requests in
+    # 60–200 s (verified 2026-09-30); ortholog/ENSP/VEP calls get their own,
+    # longer window. Successes are cached for 24 h so only the first call pays.
+    ensembl_timeout_s: float = 120.0
+    variant_timeout_s: float = 180.0
     trust_proxy: bool = False
 
     @property

@@ -1,6 +1,7 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-httpx==0.27.2
-pydantic==2.9.2
-pydantic-settings==2.5.2
-python-dotenv==1.0.1
+# Verified against Python 3.14 (2026-09-30): full test suite passes on these pins.
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3

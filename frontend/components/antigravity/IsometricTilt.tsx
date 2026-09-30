@@ -2,7 +2,7 @@
 
 import { useRef, type ReactNode } from "react";
 import { gsap } from "@/lib/gsap";
-import { usePrefersReducedMotion } from "@/lib/motion";
+import { useIsomorphicLayoutEffect, usePrefersReducedMotion } from "@/lib/motion";
 
 type IsometricTiltProps = {
   children: ReactNode;

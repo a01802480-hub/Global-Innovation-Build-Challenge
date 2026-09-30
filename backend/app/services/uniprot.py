@@ -6,7 +6,7 @@ import httpx
 from ..cache import TTLCache
 from ..config import get_settings
 
-_FIELDS = "accession,gene_names,protein_name,organism_name,length,sequence"
+_FIELDS = "accession,gene_names,protein_name,organism_name,length,sequence,xref_ensembl"
 _cache = TTLCache(ttl_s=3600, max_entries=300)
 
 
@@ -14,6 +14,24 @@ def _map_entry(data: dict) -> dict:
     genes = data.get("genes") or []
     description = data.get("proteinDescription") or data.get("proteinName") or {}
     recommended = description.get("recommendedName") or {}
+    # Ensembl gene ID from cross-references. Ensembl's own symbol lookup for
+    # "LIG1" resolves to LRIG1 (a synonym collision) — the UniProt-curated
+    # xref is authoritative and lets us call the ID-based homology endpoint.
+    # Note the xref's `id` is the transcript (ENST); the gene ID (ENSG) is in
+    # the xref properties, version-suffixed (e.g. "ENSG00000105486.16").
+    xrefs = data.get("uniProtKBCrossReferences") or []
+    ensembl_gene: str | None = None
+    for xref in xrefs:
+        if xref.get("database") != "Ensembl":
+            continue
+        for prop in xref.get("properties") or []:
+            if prop.get("key") == "GeneId":
+                gene_id = str(prop.get("value", "")).split(".")[0]
+                if gene_id.startswith("ENSG"):
+                    ensembl_gene = gene_id
+                    break
+        if ensembl_gene:
+            break
     return {
         "accession": data.get("primaryAccession"),
         "gene": next((g.get("geneName", {}).get("value") for g in genes), None),
@@ -22,6 +40,7 @@ def _map_entry(data: dict) -> dict:
         "organism": (data.get("organism") or {}).get("scientificName"),
         "length": (data.get("sequence") or {}).get("length"),
         "sequence": (data.get("sequence") or {}).get("value"),
+        "ensembl_gene": ensembl_gene,
     }
 
 

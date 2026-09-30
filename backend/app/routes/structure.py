@@ -1,19 +1,21 @@
 """Structure endpoints: RCSB PDB models, AlphaFold models, backbone writhe.
 
 The R3F viewer consumes a ~160-point Cα trace of the primary chain together
-with per-residue local writhe, active-site residues (from SITE records) and
-metal ions (from HETATM records).
+with per-residue local writhe, active-site residues (from SITE records, plus a
+curated catalytic set for RuBisCO) and metal ions (from HETATM records).
+Active-site residues carry their exact Cα coordinates so the viewer can place
+markers without re-deriving them from the downsampled trace.
 """
 from __future__ import annotations
 
 from collections import Counter
 
 import httpx
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from ..cache import TTLCache
 from ..config import get_settings
-from ..parsers import ParsedPdb, ParseError, parse_pdb_text
+from ..parsers import ParsedPdb, ParseError, ResiduePoint, parse_pdb_text
 from ..services import alphafold
 from ..writhe import downsample, local_writhe, writhe
 
@@ -36,6 +38,21 @@ CATALOG = [
         "note": "Ribulose-1,5-bisphosphate carboxylase/oxygenase. Catalytic Mg²⁺ site and carbamylated lysine.",
     },
 ]
+
+# Curated catalytic residues of activated spinach RuBisCO (PDB 8RUC / 1RXO).
+# The SITE records in these files only name the carbamylated lysine and a
+# ligand placeholder; the set below is the textbook Mg²⁺-coordinating /
+# catalytic ensemble. It is a *residue reference* — coordinates are always
+# resolved from the structure's own ATOM records, never hard-coded.
+_RUBISCO_CATALYTIC: list[tuple[str, str, int]] = [
+    ("LYS", "A", 175),
+    ("KCX", "A", 201),  # carbamylated lysine — Mg²⁺ ligand
+    ("ASP", "A", 203),  # Mg²⁺ ligand
+    ("GLU", "A", 204),  # Mg²⁺ ligand
+    ("HIS", "A", 294),
+    ("LYS", "A", 334),
+]
+_RUBISCO_PDBS = {"8RUC", "1RXO", "1RCX"}
 
 
 @router.get("/structure/catalog")
@@ -64,8 +81,11 @@ async def rcsb_model(pdb_id: str = Path(pattern=r"^[0-9A-Za-z]{4}$")) -> dict:
 
 
 @router.get("/structure/alphafold/{uniprot}")
-async def alphafold_model(uniprot: str = Path(pattern=r"^[A-Z0-9]{1,20}$")) -> dict:
-    key = f"af:{uniprot}"
+async def alphafold_model(
+    uniprot: str = Path(pattern=r"^[A-Z0-9]{1,20}$"),
+    full: bool = Query(default=False, description="Return the full Cα trace (no writhe fields)."),
+) -> dict:
+    key = f"af:{uniprot}:{full}"
     cached = _cache.get(key)
     if cached is not None:
         return cached
@@ -77,7 +97,13 @@ async def alphafold_model(uniprot: str = Path(pattern=r"^[A-Z0-9]{1,20}$")) -> d
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AlphaFold upstream error: {exc}")
-    model = _finalize_from_dicts(raw["points"], source="alphafold", uniprot=uniprot, title=f"AlphaFold model — {uniprot}")
+    model = _finalize_from_dicts(
+        raw["points"],
+        source="alphafold",
+        uniprot=uniprot,
+        title=f"AlphaFold model — {uniprot}",
+        full=full,
+    )
     model["mean_plddt"] = raw["mean_plddt"]
     _cache.set(key, model)
     return model
@@ -111,7 +137,7 @@ def _finalize(parsed: ParsedPdb, source: str, pdb_id: str | None = None, title: 
         ],
         "writhe": round(writhe(coords), 4),
         "local_writhe": [round(v, 4) for v in local_writhe(coords)],
-        "active_sites": _active_sites(parsed, primary_chain),
+        "active_sites": _active_sites(parsed, primary_chain, pdb_id),
         "metals": [
             {"element": m.element, "resi": m.resseq, "chain": m.chain, "x": m.x, "y": m.y, "z": m.z}
             for m in parsed.metals
@@ -119,9 +145,18 @@ def _finalize(parsed: ParsedPdb, source: str, pdb_id: str | None = None, title: 
     }
 
 
-def _finalize_from_dicts(points: list[dict], source: str, uniprot: str, title: str) -> dict:
-    strided = downsample(points, _MAX_TRACE_POINTS)
-    coords = [(p["x"], p["y"], p["z"]) for p in strided]
+def _finalize_from_dicts(
+    points: list[dict], source: str, uniprot: str, title: str, full: bool = False
+) -> dict:
+    if full:
+        strided = points
+        writhe_value = None
+        local: list[float] = []
+    else:
+        strided = downsample(points, _MAX_TRACE_POINTS)
+        coords = [(p["x"], p["y"], p["z"]) for p in strided]
+        writhe_value = round(writhe(coords), 4)
+        local = [round(v, 4) for v in local_writhe(coords)]
     return {
         "source": source,
         "pdb_id": None,
@@ -143,21 +178,41 @@ def _finalize_from_dicts(points: list[dict], source: str, uniprot: str, title: s
             }
             for p in strided
         ],
-        "writhe": round(writhe(coords), 4),
-        "local_writhe": [round(v, 4) for v in local_writhe(coords)],
+        "writhe": writhe_value,
+        "local_writhe": local,
         "active_sites": [],
         "metals": [],
     }
 
 
-def _active_sites(parsed: ParsedPdb, primary_chain: str) -> list[dict]:
-    sites = []
+def _active_sites(parsed: ParsedPdb, primary_chain: str, pdb_id: str | None) -> list[dict]:
+    by_res: dict[tuple[str, int], ResiduePoint] = {
+        (p.chain, p.resseq): p for p in parsed.points
+    }
+
+    def attach(resname: str, chain: str, resi: int) -> dict:
+        pt = by_res.get((chain, resi))
+        # The PDB's own atom records win over the curated name (handles
+        # modified residues like KCX / SP in legacy RuBisCO files).
+        return {
+            "resname": pt.resname if pt else resname,
+            "chain": chain,
+            "resi": resi,
+            "x": round(pt.x, 3) if pt else None,
+            "y": round(pt.y, 3) if pt else None,
+            "z": round(pt.z, 3) if pt else None,
+        }
+
+    sites: list[dict] = []
     for site in parsed.sites:
-        residues = [
-            {"resname": r, "chain": c, "resi": s}
-            for (r, c, s) in site.residues
-            if c == primary_chain
-        ]
+        residues = [attach(r, c, s) for (r, c, s) in site.residues if c == primary_chain]
+        residues = [r for r in residues if r["x"] is not None]
         if residues:
             sites.append({"site_id": site.site_id, "residues": residues})
-    return sites[:8]
+
+    if pdb_id and pdb_id.upper() in _RUBISCO_PDBS:
+        catalytic = [attach(r, c, s) for (r, c, s) in _RUBISCO_CATALYTIC if c == primary_chain]
+        catalytic = [r for r in catalytic if r["x"] is not None]
+        if catalytic:
+            sites.insert(0, {"site_id": "CAT", "residues": catalytic})
+    return sites[:10]

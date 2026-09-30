@@ -39,7 +39,10 @@ async function doFetch<T>(path: string, init: RequestInit): Promise<T> {
     const token = readCookie("biostream_csrf");
     if (token) headers["X-CSRF-Token"] = token;
   }
-  const res = await fetch(`${API_BASE}${path}`, {
+  // Every backend router is mounted under /api — prepend it centrally so
+  // call sites use short paths ("/structure/rcsb/1X9N") and can never
+  // address a non-API resource on the backend origin.
+  const res = await fetch(`${API_BASE}/api${path}`, {
     ...init,
     method,
     headers,

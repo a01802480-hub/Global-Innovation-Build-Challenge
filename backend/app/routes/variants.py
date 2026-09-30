@@ -41,12 +41,22 @@ async def impact(req: VariantImpactRequest) -> dict:
         except asyncio.TimeoutError:
             return {"status": "timeout"}
         except Exception as exc:  # upstream failures degrade per-source
-            return {"status": "unavailable", "detail": str(exc)[:200]}
+            # Some exception types stringify to "" (e.g. CancelledError) —
+            # always produce a useful detail for the source card.
+            return {"status": "unavailable", "detail": (str(exc) or type(exc).__name__)[:200]}
 
     plddt, am, sift = await asyncio.gather(
         guard(_plddt_at(req.uniprot_id, req.position)),
         guard(alphamissense.predict(req.uniprot_id, req.position, req.ref, req.alt)),
-        guard(vep.predict(entry.get("gene"), req.position, req.ref, req.alt)),
+        guard(
+            vep.predict(
+                entry.get("gene"),
+                req.position,
+                req.ref,
+                req.alt,
+                ensembl_gene=entry.get("ensembl_gene"),
+            )
+        ),
     )
     return {
         "uniprot_id": req.uniprot_id,
