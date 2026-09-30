@@ -1,0 +1,1 @@
+{"uniprot_id":"P18858","gene":"LIG1","variant":"p.R641L","plddt":{"status":"ok","plddt":90.88,"mean_model_plddt":76.77},"alphamissense":{"status":"ok","class":"pathogenic","mean_pathogenicity":0.9755166666666666,"reference":"R"},"sift":{"status":"unavailable","detail":"No Ensembl protein mapping for this gene."}}
